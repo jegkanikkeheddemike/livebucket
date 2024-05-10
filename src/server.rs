@@ -181,6 +181,9 @@ fn run_client(client: Client<TcpStream>, event_sx: Sender<ServerEvent>) {
             websocket::OwnedMessage::Pong(_) => todo!(),
         };
     }
+    if let Err(err) = event_sx.send(ServerEvent::ClientDisconnected(client_id)) {
+        eprintln!("Failed to post disconnect event: {err:#?}");
+    }
 }
 
 #[test]

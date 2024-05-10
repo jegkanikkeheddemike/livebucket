@@ -9,3 +9,4 @@ websocket = "*"
 serde = {version = "*", features = ["derive"]}
 serde_json = "*"
 uuid = {version = "*", features = ["v4"]}
+crossbeam = "*"

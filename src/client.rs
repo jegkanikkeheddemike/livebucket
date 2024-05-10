@@ -3,13 +3,11 @@ use std::{
     net::TcpStream,
     ops::{Deref, DerefMut},
     str::FromStr,
-    sync::{
-        mpsc::{channel, Receiver, Sender},
-        Arc, Mutex,
-    },
+    sync::{Arc, Mutex},
     thread,
 };
 
+use crossbeam::channel::{unbounded, Receiver, Sender};
 use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
@@ -26,41 +24,10 @@ pub struct LVBClient {
 }
 
 pub struct RespWaiter {
-    rx: Receiver<Vec<KVPair>>,
-    query_id: String,
-    callbacks: CBMap,
-    sender: Arc<Mutex<Writer<TcpStream>>>,
-}
-
-impl Deref for RespWaiter {
-    type Target = Receiver<Vec<KVPair>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.rx
-    }
-}
-
-impl DerefMut for RespWaiter {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.rx
-    }
-}
-
-impl Drop for RespWaiter {
-    fn drop(&mut self) {
-        self.callbacks.lock().unwrap().remove(&self.query_id);
-
-        let drop_msg = Query {
-            query_type: QueryType::UNWATCH,
-            query_id: self.query_id.clone(),
-        };
-        let str: String = serde_json::to_string(&drop_msg).unwrap();
-        self.sender
-            .lock()
-            .unwrap()
-            .send_message(&OwnedMessage::Text(str))
-            .unwrap();
-    }
+    pub rx: Receiver<Vec<KVPair>>,
+    pub query_id: String,
+    pub callbacks: CBMap,
+    pub sender: Arc<Mutex<Writer<TcpStream>>>,
 }
 
 type CBMap = Arc<Mutex<HashMap<String, (bool, Sender<Vec<KVPair>>)>>>;
@@ -86,7 +53,7 @@ impl LVBClient {
         }
     }
 
-    pub fn insert<T: Serialize>(&mut self, key: &str, value: T) {
+    pub fn insert<T: Serialize>(&self, key: &str, value: T) {
         let query_id = Uuid::new_v4();
 
         let json_str = serde_json::to_string(&value).unwrap();
@@ -106,8 +73,8 @@ impl LVBClient {
             .unwrap();
     }
 
-    pub fn get(&mut self, search: &str) -> RespWaiter {
-        let (sx, rx) = channel();
+    pub fn get(&self, search: &str) -> RespWaiter {
+        let (sx, rx) = unbounded();
 
         let query_id = Uuid::new_v4();
 
@@ -136,8 +103,8 @@ impl LVBClient {
         }
     }
 
-    pub fn watch(&mut self, search: &str) -> RespWaiter {
-        let (sx, rx) = channel();
+    pub fn watch(&self, search: &str) -> RespWaiter {
+        let (sx, rx) = unbounded();
 
         let query_id = Uuid::new_v4();
 
@@ -204,19 +171,50 @@ fn run_socket(mut reader: Reader<TcpStream>, callbacks: CBMap) {
 
 #[test]
 fn insert_test() {
-    let mut client = LVBClient::new("jensogkarsten.site");
+    let client = LVBClient::new("jensogkarsten.site");
 
     client.insert(
-        "user-123",
+        "user-1234",
         serde_json::json!({"name": "jens", "age": "karsten"}),
     );
 }
 
 #[test]
 fn get_test() {
-    let mut client = LVBClient::new("jensogkarsten.site");
+    let client = LVBClient::new("jensogkarsten.site");
 
     let rx = client.get("");
 
     println!("{:#?}", rx.recv().unwrap());
+}
+
+impl Deref for RespWaiter {
+    type Target = Receiver<Vec<KVPair>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rx
+    }
+}
+
+impl DerefMut for RespWaiter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rx
+    }
+}
+
+impl Drop for RespWaiter {
+    fn drop(&mut self) {
+        self.callbacks.lock().unwrap().remove(&self.query_id);
+
+        let drop_msg = Query {
+            query_type: QueryType::UNWATCH,
+            query_id: self.query_id.clone(),
+        };
+        let str: String = serde_json::to_string(&drop_msg).unwrap();
+        self.sender
+            .lock()
+            .unwrap()
+            .send_message(&OwnedMessage::Text(str))
+            .unwrap();
+    }
 }
