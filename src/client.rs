@@ -94,7 +94,7 @@ impl LVBClient {
         self.callbacks
             .lock()
             .unwrap()
-            .insert(query_id.to_string(), (false, sx));
+            .insert(query_id.to_string(), (true, sx));
 
         let query = Query {
             query_type: QueryType::WATCH(search.into()),
@@ -141,6 +141,8 @@ fn run_socket(mut reader: Reader<TcpStream>, callbacks: CBMap) {
             }
         }
     }
+
+    let _ = callbacks.lock().unwrap().drain().collect::<Vec<_>>();
 }
 
 #[test]
@@ -174,5 +176,14 @@ fn watch_test() {
 
     for v in rx.iter() {
         println!("{v:#?}");
+    }
+}
+#[test]
+fn watch_test2() {
+    let mut client = LVBClient::new("0.0.0.0");
+    let rx = client.watch("");
+
+    while let Ok(data) = rx.recv() {
+        println!("{data:#?}");
     }
 }

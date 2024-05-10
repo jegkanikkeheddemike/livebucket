@@ -70,7 +70,18 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
                     }
                 }
                 QueryType::WATCH(search) => {
-                    watches.push((client_id, query.query_id, search));
+                    watches.push((client_id, query.query_id.clone(), search.clone()));
+
+                    if let Err(err) = event_sx.send(ServerEvent::Query(
+                        client_id,
+                        Query {
+                            query_type: QueryType::GET(search.clone()),
+                            query_id: query.query_id,
+                        },
+                    )) {
+                        eprintln!("Failed to self-send watch update {search} with: {err:?}");
+                        continue;
+                    }
                 }
                 QueryType::INSERT(key, value) => {
                     let Result::Ok(ser_json) = serde_json::to_string(&value) else {
@@ -205,6 +216,4 @@ fn read_all_test() {
             .unwrap(),
         ))
         .unwrap();
-
-    
 }
