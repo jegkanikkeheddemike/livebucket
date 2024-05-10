@@ -4,6 +4,7 @@ use serde_json::Value;
 pub enum QueryType {
     GET(String),
     WATCH(String),
+    UNWATCH,
     INSERT(String, Value),
 }
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

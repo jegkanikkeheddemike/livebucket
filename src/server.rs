@@ -47,6 +47,7 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
             }
             ServerEvent::ClientDisconnected(client_id) => {
                 clients.remove(&client_id);
+                watches.retain(|(c, _, _)| *c != client_id);
             }
             ServerEvent::Query(client_id, query) => match query.query_type {
                 QueryType::GET(search) => {
@@ -107,6 +108,7 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
                         }
                     }
                 }
+                QueryType::UNWATCH => watches.retain(|(_, q, _)| q != &query.query_id),
             },
         }
     }

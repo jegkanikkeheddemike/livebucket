@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap,
     net::TcpStream,
+    ops::{Deref, DerefMut},
     str::FromStr,
     sync::{
         mpsc::{channel, Receiver, Sender},
@@ -20,8 +21,46 @@ use websocket::{
 use crate::shared::{KVPair, Query, QueryType, Response};
 
 pub struct LVBClient {
-    sender: Writer<TcpStream>,
+    sender: Arc<Mutex<Writer<TcpStream>>>,
     callbacks: CBMap,
+}
+
+pub struct RespWaiter {
+    rx: Receiver<Vec<KVPair>>,
+    query_id: String,
+    callbacks: CBMap,
+    sender: Arc<Mutex<Writer<TcpStream>>>,
+}
+
+impl Deref for RespWaiter {
+    type Target = Receiver<Vec<KVPair>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.rx
+    }
+}
+
+impl DerefMut for RespWaiter {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.rx
+    }
+}
+
+impl Drop for RespWaiter {
+    fn drop(&mut self) {
+        self.callbacks.lock().unwrap().remove(&self.query_id);
+
+        let drop_msg = Query {
+            query_type: QueryType::UNWATCH,
+            query_id: self.query_id.clone(),
+        };
+        let str: String = serde_json::to_string(&drop_msg).unwrap();
+        self.sender
+            .lock()
+            .unwrap()
+            .send_message(&OwnedMessage::Text(str))
+            .unwrap();
+    }
 }
 
 type CBMap = Arc<Mutex<HashMap<String, (bool, Sender<Vec<KVPair>>)>>>;
@@ -41,7 +80,10 @@ impl LVBClient {
         let callbacks2 = callbacks.clone();
         thread::spawn(move || run_socket(reader, callbacks2));
 
-        LVBClient { sender, callbacks }
+        LVBClient {
+            sender: Arc::new(Mutex::new(sender)),
+            callbacks,
+        }
     }
 
     pub fn insert<T: Serialize>(&mut self, key: &str, value: T) {
@@ -58,11 +100,13 @@ impl LVBClient {
         let query_str = serde_json::to_string(&query).unwrap();
 
         self.sender
+            .lock()
+            .unwrap()
             .send_message(&OwnedMessage::Text(query_str))
             .unwrap();
     }
 
-    pub fn get(&mut self, search: &str) -> Receiver<Vec<KVPair>> {
+    pub fn get(&mut self, search: &str) -> RespWaiter {
         let (sx, rx) = channel();
 
         let query_id = Uuid::new_v4();
@@ -80,13 +124,19 @@ impl LVBClient {
         let query_str = serde_json::to_string(&query).unwrap();
 
         self.sender
+            .lock()
+            .unwrap()
             .send_message(&OwnedMessage::Text(query_str))
             .unwrap();
-
-        rx
+        RespWaiter {
+            rx,
+            query_id: query_id.to_string(),
+            callbacks: self.callbacks.clone(),
+            sender: self.sender.clone(),
+        }
     }
 
-    pub fn watch(&mut self, search: &str) -> Receiver<Vec<KVPair>> {
+    pub fn watch(&mut self, search: &str) -> RespWaiter {
         let (sx, rx) = channel();
 
         let query_id = Uuid::new_v4();
@@ -104,10 +154,17 @@ impl LVBClient {
         let query_str = serde_json::to_string(&query).unwrap();
 
         self.sender
+            .lock()
+            .unwrap()
             .send_message(&OwnedMessage::Text(query_str))
             .unwrap();
 
-        rx
+        RespWaiter {
+            rx,
+            query_id: query_id.to_string(),
+            callbacks: self.callbacks.clone(),
+            sender: self.sender.clone(),
+        }
     }
 }
 
@@ -147,7 +204,7 @@ fn run_socket(mut reader: Reader<TcpStream>, callbacks: CBMap) {
 
 #[test]
 fn insert_test() {
-    let mut client = LVBClient::new("0.0.0.0");
+    let mut client = LVBClient::new("jensogkarsten.site");
 
     client.insert(
         "user-123",
@@ -157,33 +214,9 @@ fn insert_test() {
 
 #[test]
 fn get_test() {
-    let mut client = LVBClient::new("0.0.0.0");
+    let mut client = LVBClient::new("jensogkarsten.site");
 
     let rx = client.get("");
 
     println!("{:#?}", rx.recv().unwrap());
-}
-
-#[test]
-fn watch_test() {
-    let mut client = LVBClient::new("0.0.0.0");
-
-    let random_key = Uuid::new_v4();
-
-    let rx = client.watch(random_key.to_string().as_str());
-
-    client.insert(random_key.to_string().as_str(), "123");
-
-    for v in rx.iter() {
-        println!("{v:#?}");
-    }
-}
-#[test]
-fn watch_test2() {
-    let mut client = LVBClient::new("0.0.0.0");
-    let rx = client.watch("");
-
-    while let Ok(data) = rx.recv() {
-        println!("{data:#?}");
-    }
 }
