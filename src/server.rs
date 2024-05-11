@@ -6,6 +6,8 @@ use std::{
     thread,
 };
 
+use serde::de::DeserializeOwned;
+use serde_json::Value;
 use sled::Db;
 use uuid::Uuid;
 use websocket::{
@@ -13,16 +15,16 @@ use websocket::{
     OwnedMessage,
 };
 
-use crate::shared::{KVPair, Query, QueryType, Response};
+use crate::shared::{GetFn, KVPair, Query, QueryType, Response};
 
-pub fn run(path: &Path) {
+pub fn run(path: &Path, functions: &'static [(&'static str, fn(DBRead, Value) -> Vec<KVPair>)]) {
     let mut server = websocket::server::sync::Server::bind("0.0.0.0:3990").unwrap();
 
     let db = sled::open(path).unwrap();
 
     let (sx, rx) = channel();
     let sx_c = sx.clone();
-    thread::spawn(move || server_event_handler(db, rx, sx_c));
+    thread::spawn(move || server_event_handler(db, rx, sx_c, functions));
 
     while let Some(conn_res) = server.next() {
         let Result::Ok(conn_up) = conn_res else {
@@ -36,7 +38,12 @@ pub fn run(path: &Path) {
     }
 }
 
-fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<ServerEvent>) {
+fn server_event_handler(
+    db: Db,
+    rx: Receiver<ServerEvent>,
+    event_sx: Sender<ServerEvent>,
+    functions: &'static [(&'static str, fn(DBRead, Value) -> Vec<KVPair>)],
+) {
     let mut clients = HashMap::new();
     let mut watches = vec![];
 
@@ -51,7 +58,17 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
             }
             ServerEvent::Query(client_id, query) => match query.query_type {
                 QueryType::GET(search) => {
-                    let query_res = get_query(&search, &db);
+                    let query_res = match search {
+                        GetFn::Procedure(fn_name, arg) => {
+                            let Some(fn_) = functions.iter().find(|(f, _)| f == &fn_name) else {
+                                eprintln!("TODO: Handle invalid function name");
+                                continue;
+                            };
+
+                            fn_.1(DBRead::new(db.clone()), arg)
+                        }
+                        GetFn::Prefix(search) => get_query(&search, &db),
+                    };
 
                     let Some(sx) = clients.get_mut(&client_id) else {
                         eprintln!("Failed getting sx of {client_id}");
@@ -80,7 +97,7 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
                             query_id: query.query_id,
                         },
                     )) {
-                        eprintln!("Failed to self-send watch update {search} with: {err:?}");
+                        eprintln!("Failed to self-send watch update {search:?} with: {err:?}");
                         continue;
                     }
                 }
@@ -93,9 +110,13 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
                         eprintln!("Failed to insert {key}:{ser_json} into db: {insert_err:?}");
                         continue;
                     }
-                    for (client_id, id, search) in
-                        watches.iter().filter(|(_, _, s)| key.starts_with(s))
-                    {
+                    for (client_id, id, search) in &watches {
+                        if let GetFn::Procedure(search, _) = search {
+                            if !search.starts_with(&key) {
+                                continue;
+                            }
+                        }
+
                         if let Err(err) = event_sx.send(ServerEvent::Query(
                             *client_id,
                             Query {
@@ -103,7 +124,7 @@ fn server_event_handler(db: Db, rx: Receiver<ServerEvent>, event_sx: Sender<Serv
                                 query_id: id.to_owned(),
                             },
                         )) {
-                            eprintln!("Failed to self-send watch update {search} with: {err:?}");
+                            eprintln!("Failed to self-send watch update {search:?} with: {err:?}");
                             continue;
                         }
                     }
@@ -186,6 +207,40 @@ fn run_client(client: Client<TcpStream>, event_sx: Sender<ServerEvent>) {
     }
 }
 
+pub struct DBRead {
+    db: Db,
+}
+
+impl DBRead {
+    fn new(db: Db) -> Self {
+        Self { db }
+    }
+
+    pub fn get<T: DeserializeOwned>(&self, key: &str) -> Option<T> {
+        let data = self.db.get(key).ok()??;
+        let t = serde_json::from_slice(&data).ok()?;
+        Some(t)
+    }
+    pub fn get_prefix_parsed<T: DeserializeOwned>(&self, prefix: &str) -> Vec<(String, T)> {
+        self.db
+            .scan_prefix(prefix)
+            .filter_map(|d| d.ok())
+            .filter_map(|(key, value)| {
+                Some((
+                    String::from_utf8(key.to_vec()).ok()?,
+                    serde_json::from_slice(&value).ok()?,
+                ))
+            })
+            .collect()
+    }
+    pub fn get_prefix(&self, prefix: &str) -> Vec<KVPair> {
+        self.get_prefix_parsed::<Value>(prefix)
+            .into_iter()
+            .map(|(key, value)| KVPair { key, value })
+            .collect()
+    }
+}
+
 #[test]
 fn insert_test() {
     use serde_json::json;
@@ -215,7 +270,7 @@ fn read_all_test() {
     client
         .send_message(&OwnedMessage::Text(
             serde_json::to_string(&Query {
-                query_type: QueryType::GET("".into()),
+                query_type: QueryType::GET(GetFn::Prefix("".into())),
                 query_id: Uuid::new_v4().to_string(),
             })
             .unwrap(),

@@ -16,7 +16,7 @@ use websocket::{
     OwnedMessage,
 };
 
-use crate::shared::{KVPair, Query, QueryType, Response};
+use crate::shared::{GetFn, KVPair, Query, QueryType, Response};
 
 pub struct LVBClient {
     sender: Arc<Mutex<Writer<TcpStream>>>,
@@ -73,7 +73,7 @@ impl LVBClient {
             .unwrap();
     }
 
-    pub fn get(&self, search: &str) -> RespWaiter {
+    pub fn get(&self, search: GetFn) -> RespWaiter {
         let (sx, rx) = unbounded();
 
         let query_id = Uuid::new_v4();
@@ -84,7 +84,7 @@ impl LVBClient {
             .insert(query_id.to_string(), (false, sx));
 
         let query = Query {
-            query_type: QueryType::GET(search.into()),
+            query_type: QueryType::GET(search),
             query_id: query_id.to_string(),
         };
 
@@ -103,7 +103,7 @@ impl LVBClient {
         }
     }
 
-    pub fn watch(&self, search: &str) -> RespWaiter {
+    pub fn watch(&self, search: GetFn) -> RespWaiter {
         let (sx, rx) = unbounded();
 
         let query_id = Uuid::new_v4();
@@ -114,7 +114,7 @@ impl LVBClient {
             .insert(query_id.to_string(), (true, sx));
 
         let query = Query {
-            query_type: QueryType::WATCH(search.into()),
+            query_type: QueryType::WATCH(search),
             query_id: query_id.to_string(),
         };
 
@@ -183,7 +183,7 @@ fn insert_test() {
 fn get_test() {
     let client = LVBClient::new("jensogkarsten.site");
 
-    let rx = client.get("");
+    let rx = client.get(GetFn::Prefix("".into()));
 
     println!("{:#?}", rx.recv().unwrap());
 }

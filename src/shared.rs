@@ -1,9 +1,15 @@
 use serde_json::Value;
 
+#[derive(Debug,Clone, serde::Deserialize, serde::Serialize)]
+pub enum GetFn {
+    Procedure(String, Value),
+    Prefix(String),
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum QueryType {
-    GET(String),
-    WATCH(String),
+    GET(GetFn),
+    WATCH(GetFn),
     UNWATCH,
     INSERT(String, Value),
 }
